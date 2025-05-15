@@ -18,7 +18,7 @@ This web tool is provided *as-is*, without warranty or official support from Fiv
 """)
 
 # Title and description
-st.title("📞 Five9 IVR Variable, Skill & Prompt Extractor")
+st.title("📞 Five9 IVR Audit Tool")
 st.markdown("Upload a Five9 IVR XML file to extract **Call Variables**, **Variables**, **Skills**, and **Prompt Names** from all scripts.")
 
 # Upload XML file
