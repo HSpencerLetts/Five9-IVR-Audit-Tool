@@ -5,7 +5,7 @@ import pandas as pd
 import re
 
 # Set Streamlit page configuration
-st.set_page_config(page_title="Five9 IVR Variable, Skill & Prompt Extractor", layout="wide")
+st.set_page_config(page_title="Five9 IVR Audit Tool", layout="wide")
 
 # Display a simple disclaimer
 st.info("""
