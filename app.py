@@ -3,18 +3,35 @@ import xml.etree.ElementTree as ET
 import html
 import pandas as pd
 import re
-import io
 
+# Set Streamlit page configuration
 st.set_page_config(page_title="Five9 IVR Variable, Skill & Prompt Extractor", layout="wide")
+
+# Display a simple disclaimer
+st.info("""
+**Disclaimer & Terms of Use**
+
+This web tool is provided *as-is*, without warranty or official support from Five9.  
+- All file processing is local and no data is stored or transmitted externally.  
+- Intended for educational and illustrative use only.  
+- Use at your own risk. For production implementations, please consult Five9 TAMs or Professional Services.
+""")
+
+# Title and description
 st.title("📞 Five9 IVR Variable, Skill & Prompt Extractor")
 st.markdown("Upload a Five9 IVR XML file to extract **Call Variables**, **Variables**, **Skills**, and **Prompt Names** from all scripts.")
 
+# Upload XML file
 uploaded_file = st.file_uploader("Upload your Five9 IVR XML file", type="xml")
 
 if uploaded_file:
+    # Read and decode file content
     raw = uploaded_file.read().decode("utf-8")
+
+    # Extract individual <IVRScripts> blocks
     matches = re.findall(r"<IVRScripts>.*?</IVRScripts>", raw, re.DOTALL)
 
+    # Containers for extracted data
     call_var_rows = []
     var_rows = []
     skill_rows = []
@@ -24,36 +41,55 @@ if uploaded_file:
 
     for block in matches:
         try:
+            # Parse each <IVRScripts> block
             script = ET.fromstring(block)
         except ET.ParseError as e:
+            # Log any parse errors
             failed_scripts.append({"Script Name": "Unknown (outer parse failed)", "Error": str(e)})
             continue
 
+        # Get script name and embedded XMLDefinition
         name = script.findtext("Name", default="").strip()
         xml_def = script.findtext("XMLDefinition", default="")
         if not xml_def:
             continue
 
         try:
+            # Decode & sanitize embedded IVR XML
             decoded = html.unescape(xml_def)
             decoded = re.sub(r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;', decoded)
-            decoded = decoded.replace("\x00", "")
+            decoded = decoded.replace("\x00", "")  # Remove null bytes
             ivr_root = ET.fromstring(decoded)
             parsed_count += 1
         except ET.ParseError as e:
+            # Handle decoding errors
             failed_scripts.append({"Script Name": name or "Unknown", "Error": str(e)})
             continue
 
+        # Look for <modules> in the IVR structure
         modules = ivr_root.find("modules")
         if modules is not None:
             for mod in modules:
-                tag = mod.tag
+                tag = mod.tag  # e.g. getDigits, input, skillTransfer, etc.
+                mod_name = mod.findtext("moduleName", default="")  # Friendly module label
 
-                # Extract Variables & Call Variables
-                def process_variable(var_name, source):
+                # --- VARIABLE EXTRACTION ---
+
+                # Search for all <variableName> tags within the module
+                for var_elem in mod.findall(".//variableName"):
+                    var_name = var_elem.text
                     if not var_name:
-                        return
-                    row = {"Script Name": name, "Variable Name": var_name, "Source Module": source}
+                        continue
+
+                    # Structure the result
+                    row = {
+                        "Script Name": name,
+                        "Module Name": mod_name,
+                        "Variable Name": var_name,
+                        "Source Module": tag
+                    }
+
+                    # Identify as call variable if it uses dot notation
                     if "." in var_name:
                         group, var = var_name.split(".", 1)
                         row["Type"] = "Call Variable"
@@ -64,33 +100,32 @@ if uploaded_file:
                         row["Group"] = ""
                         var_rows.append(row)
 
-                if tag == "setVariable":
-                    for expr in mod.findall(".//expressions"):
-                        var_name = expr.findtext("variableName", "")
-                        process_variable(var_name, tag)
+                # --- SKILL EXTRACTION ---
 
-                elif tag in ["getDigits", "input"]:
-                    var_name = mod.findtext(".//targetVariableName", "")
-                    process_variable(var_name, tag)
-
-                elif tag == "iterator":
-                    var_name = mod.findtext(".//variableName", "")
-                    process_variable(var_name, tag)
-
-                # Extract Skills
                 if tag == "skillTransfer":
+                    # Look inside nested structure for external skill names
                     skill_names = mod.findall(".//listOfSkillsEx/extrnalObj/name")
                     for skill in skill_names:
                         if skill.text:
-                            skill_rows.append({"Script Name": name, "Skill Name": skill.text.strip()})
+                            skill_rows.append({
+                                "Script Name": name,
+                                "Skill Name": skill.text.strip(),
+                                "Module Name": mod_name
+                            })
 
-                # Extract Prompts
+                # --- PROMPT EXTRACTION ---
+
                 for prompt in mod.findall(".//prompt"):
                     name_tag = prompt.find("name")
                     if name_tag is not None and name_tag.text:
-                        prompt_rows.append({"Script Name": name, "Prompt Name": name_tag.text.strip()})
+                        prompt_rows.append({
+                            "Script Name": name,
+                            "Prompt Name": name_tag.text.strip(),
+                            "Module Name": mod_name
+                        })
 
-    # Display results
+    # ---------- UI OUTPUT: RESULTS DISPLAY ----------
+
     st.subheader("📂 Call Variables")
     if call_var_rows:
         df_call = pd.DataFrame(call_var_rows).drop_duplicates().sort_values(by=["Script Name", "Variable Name"])
@@ -123,11 +158,12 @@ if uploaded_file:
     else:
         st.info("No Prompts found.")
 
-    # Display Failures
+    # ---------- UI OUTPUT: ERRORS ----------
     if failed_scripts:
         st.subheader(f"⚠️ {len(failed_scripts)} IVR script(s) failed to process")
         fail_df = pd.DataFrame(failed_scripts)
         st.dataframe(fail_df, use_container_width=True)
         st.download_button("Download Failures CSV", fail_df.to_csv(index=False), "ivr_failures.csv")
 
+    # Final summary
     st.success(f"✅ Processed {parsed_count} IVRs. {len(failed_scripts)} failed.")
