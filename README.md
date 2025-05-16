@@ -26,11 +26,11 @@
   * **Debug Tools**: Drill into per-script data in an expander
 
 * **Data Export**
-
-  * **CSV** downloads for each category
-  * **Excel** (.xlsx) export of all sheets (Call Variables, Variables, Skills, Prompts, Failures)
-  * **Single Diagram PDF**: Download the call-flow diagram of any script
-  * **Batch ZIP**: On-demand generation of a ZIP containing PDFs of all call-flow diagrams (with progress bar)
+  
+  * ✅ **CSV** downloads for each category
+  * ✅ **Excel** (.xlsx) export of all sheets (Call Variables, Variables, Skills, Prompts, Failures)
+  * 🚧 **Single Diagram PDF** *(Work in Progress)*
+  * 🚧 **Batch ZIP Export** *(Work in Progress)*
 
 * **Robust XML Handling**
 
