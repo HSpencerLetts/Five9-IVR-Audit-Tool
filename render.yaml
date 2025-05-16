@@ -3,7 +3,5 @@ services:
     name: five9-ivr-audit
     env: python
     plan: free
-    buildCommand: |
-      apt-get update && apt-get install -y graphviz
-      pip install -r requirements.txt
+    buildCommand: ./build.sh
     startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
