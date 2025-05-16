@@ -8,7 +8,6 @@ import zipfile
 import graphviz  # Requires Graphviz system install
 from typing import List, Dict, Tuple, Optional
 
-
 # Helper: split raw XML into individual <IVRScripts> blocks
 def parse_ivrscripts_blocks(xml_text: str) -> List[str]:
     xml_text = xml_text.lstrip('\ufeff')  # strip BOM
@@ -288,54 +287,6 @@ with st.container():
                 dot.edge(src, dst)
     st.graphviz_chart(dot)
 
-# Offer SVG export for the selected diagram
-svg_data = dot.pipe(format='svg')
-st.download_button(
-    "Download Diagram (SVG)",
-    data=svg_data,
-    file_name=f"{selected}.svg",
-    mime="image/svg+xml"
-)
-
-# Batch export all diagrams as SVG ZIP
-if st.button('Generate All Diagrams (SVG) ZIP'):
-    with st.spinner('Building ZIP of all SVG diagrams…'):
-        progress = st.progress(0)
-        total = len(script_names)
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w') as zf:
-            for idx, (name, blk) in enumerate(zip(script_names, scripts), start=1):
-                xml_txt = ET.fromstring(blk).findtext('XMLDefinition', default='')
-                try:
-                    tree = ET.fromstring(clean_xml_definition(xml_txt))
-                except ET.ParseError:
-                    continue
-                edges2, labels2 = build_flow_graph(tree)
-                dot2 = graphviz.Digraph(
-                    format='svg',
-                    graph_attr={'rankdir':'LR'},
-                    node_attr={'shape':'box','style':'rounded,filled','fillcolor':'#eef4fd'},
-                    edge_attr={'arrowsize':'0.7'}
-                )
-                for nid, lbl in labels2.items():
-                    dot2.node(nid, lbl)
-                for s, succs in edges2.items():
-                    for d, k in succs:
-                        if k:
-                            dot2.edge(s, d, xlabel=k)
-                        else:
-                            dot2.edge(s, d)
-                svg_all = dot2.pipe(format='svg')
-                zf.writestr(f"{name}.svg", svg_all)
-                progress.progress(idx/total)
-        zip_buffer.seek(0)
-        st.download_button(
-            'Download All Diagrams (SVG ZIP)',
-            data=zip_buffer.getvalue(),
-            file_name='all_diagrams_svg.zip',
-            mime='application/zip'
-        )
-
 # Debug Tools
 with st.expander('🐞 Debug Tools'):
     sel2 = st.selectbox('Inspect Script', script_names)
@@ -346,13 +297,6 @@ with st.expander('🐞 Debug Tools'):
             st.dataframe(df_dbg, use_container_width=True, height=200)
         else:
             st.info(f'No {section.lower()} for this script.')
-
-# Sidebar: App Info
-with st.sidebar.expander("⚙️ App Info"):
-    st.markdown("Version: **10.2**")
-    st.markdown("Built by: Harry Spencer Letts")
-    st.markdown("[📧 Contact](mailto:harry.spencerletts@five9.com)")
-
 
 # Footer
 st.markdown('---')
