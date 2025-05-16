@@ -1,22 +1,41 @@
-# 📞 Five9 IVR Variable, Skill & Prompt Extractor
+# 📞 Five9 IVR Audit Tool v10.2
 
-This is a Streamlit-based web tool for parsing and extracting **Call Variables**, **Variables**, **Skills**, and **Prompt Names** from Five9 IVR XML scripts.
+**A Streamlit-based web tool for parsing and extracting Call Variables, Variables, Skills, and Prompt Names from Five9 IVR XML scripts — now with diagram exports and more**
 
-> ⚠️ **Not an official Five9 tool.** This project is provided for illustrative and educational purposes only.
+> ⚠️ *Not an official Five9 tool. Provided *as-is* for illustrative and educational purposes only.*
 
 ---
 
-## 🧠 Features
+## 🧠 Key Features (v10.2)
 
-- Upload a Five9 IVR XML file exported via the Five9 Admin Web Service API
-- Automatically extracts:
-  - 🔁 Call Variables (`Group.Variable` format)
-  - 💡 Local Variables
-  - 🎯 Skills used in skillTransfer modules
-  - 🔊 Prompts declared in modules
-- Supports multiple scripts per file (batch format)
-- Clean, user-friendly UI built in Streamlit
-- Outputs downloadable CSV files for each category
+* **IVR Parsing & Extraction**
+
+  * Splits single or batch XML containing multiple `<IVRScripts>` blocks
+  * Extracts:
+
+    * 🔁 **Call Variables** (`Group.Variable` format)
+    * 💡 **Local Variables**
+    * 🎯 **Skills** used in `skillTransfer` modules
+    * 🔊 **Prompts** declared in modules
+
+* **User-Friendly UI**
+
+  * Clean, modern styling (rounded cards, shadows)
+  * **Global search** filter across all tables
+  * **Summary Dashboard**: Scripts processed, failures, unique variable counts
+  * **Debug Tools**: Drill into per-script data in an expander
+
+* **Data Export**
+
+  * **CSV** downloads for each category
+  * **Excel** (.xlsx) export of all sheets (Call Variables, Variables, Skills, Prompts, Failures)
+  * **Single Diagram PDF**: Download the call-flow diagram of any script
+  * **Batch ZIP**: On-demand generation of a ZIP containing PDFs of all call-flow diagrams (with progress bar)
+
+* **Robust XML Handling**
+
+  * Cleans invalid tokens and control characters
+  * Explicit checks for missing elements to avoid parse errors
 
 ---
 
@@ -24,16 +43,60 @@ This is a Streamlit-based web tool for parsing and extracting **Call Variables**
 
 You can try it live via Streamlit sharing:
 
-👉 [Launch IVR Reader UI](https://hsl-ivr-reader.streamlit.app/)
+👉 [Launch IVR Reader UI](https://five9-ivr-audit-tool.streamlit.app/)
 
 ---
 
-## 📥 How to Export from Five9
+## 📥 Exporting IVR XML from Five9
 
-Use the [PSFive9Admin PowerShell module](https://github.com/Five9DeveloperProgram/PSFive9Admin) to retrieve your IVR XML data:
+Use the PowerShell `PSFive9Admin` module to download your IVR scripts:
 
 ```powershell
-Connect-Five9AdminWebService -DataCenter EU # or US
+Connect-Five9AdminWebService -DataCenter EU  # or US
 Get-Five9IVRScript | ForEach-Object {
     "<IVRScripts><Name>$($_.Name)</Name><XMLDefinition><![CDATA[$($_.XmlDefinition)]]></XMLDefinition></IVRScripts>"
 } | Set-Content -Path "$env:USERPROFILE\Downloads\IVR_Scripts.xml"
+```
+
+---
+
+## 📦 Requirements
+
+```text
+streamlit>=1.24.1
+pandas>=2.0.0
+graphviz>=0.20.1
+openpyxl>=3.1.0
+lxml>=4.9.0
+xmltodict>=0.13.0
+```
+
+> **Note**: Graphviz system package must be installed separately (so `dot` is on your PATH).
+
+---
+
+## 🛠️ Changelog
+
+### v10.2
+
+* **On-demand ZIP export** with progress bar and spinner
+* **Orthogonal edge labels** via `xlabel` to avoid warnings
+* **Strict XML cleaning** (BOM, control characters)
+* **Keyword-only** `to_excel` calls to silence pandas 3.0 FutureWarnings
+* **Improved UI**: debug expander default open, reorganized generation flow
+
+### v10.1
+
+* Added PDF export for individual diagrams
+* Batch ZIP export of all diagrams
+
+### v10.0
+
+* Call-flow diagram rendering with Graphviz in Streamlit
+* Modern CSS styling, debug tools, Excel export, and more
+
+---
+
+## ✉️ Feedback
+
+Send feedback or issues to **[harry.spencerletts@five9.com](mailto:harry.spencerletts@five9.com)**.
