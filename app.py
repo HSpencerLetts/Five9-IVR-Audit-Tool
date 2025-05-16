@@ -1,13 +1,3 @@
-# 📚 Five9 IVR Audit Tool v10.2
-# --------------------------------
-# A Streamlit app to:
-# - Parse Five9 IVR XML scripts
-# - Extract Call Variables, Variables, Skills, Prompts
-# - Display summary metrics and detailed tables
-# - Export data to CSV and Excel
-# - Render call-flow diagrams and export to PDF
-# - Batch-export all diagrams as a ZIP of PDFs
-
 import streamlit as st
 import xml.etree.ElementTree as ET
 import html
@@ -134,7 +124,6 @@ def build_flow_graph(ivr_root: ET.Element) -> Tuple[Dict[str, List[Tuple[str, Op
 # Streamlit UI
 st.set_page_config(page_title='Five9 IVR Audit Tool v10.2', page_icon='📞', layout='wide')
 
-# Disclaimer
 st.info(
     """
     **Disclaimer & Terms of Use**
@@ -146,7 +135,6 @@ st.info(
     """
 )
 
-# CSS styling
 st.markdown(
     """
     <style>
@@ -157,11 +145,10 @@ st.markdown(
     """, unsafe_allow_html=True
 )
 
-# Title
 st.title('📞 Five9 IVR Audit Tool v10.2')
-st.markdown('Upload IVR XML to extract data and render exportable call-flow diagrams.')
+st.markdown('Upload IVR XML to extract data and render call-flow diagrams.')
 
-# File Uploader
+# File uploader
 uploaded_file = st.file_uploader('Upload IVR XML file', type='xml')
 if not uploaded_file:
     st.stop()
@@ -206,55 +193,50 @@ for idx, blk in enumerate(scripts, start=1):
     prompts.extend(ps)
     debug_data[name] = {'Call Variables': cvs, 'Variables': vs, 'Skills': ss, 'Prompts': ps}
 
-# Sidebar: Search & Excel
+# Sidebar: Global Search & Excel export
 st.sidebar.header('🔎 Global Search')
 search = st.sidebar.text_input('Filter all tables')
-
 def filter_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or not search:
         return df
     mask = df.apply(lambda row: row.astype(str).str.contains(search, case=False).any(), axis=1)
     return df[mask]
 
-# Build DataFrames
-df_call = make_df(call_vars, sort_cols=['Script Name','Variable Name'])
-df_vars = make_df(vars_, sort_cols=['Script Name','Variable Name'])
-df_skill = make_df(skills, sort_cols=['Script Name','Skill Name'])
-df_prompt = make_df(prompts, sort_cols=['Script Name','Prompt Name'])
-
-# Filtered views
+# Build and filter DataFrames
+df_call = make_df(call_vars, sort_cols=['Script Name', 'Variable Name'])
+df_vars = make_df(vars_, sort_cols=['Script Name', 'Variable Name'])
+df_skill = make_df(skills, sort_cols=['Script Name', 'Skill Name'])
+df_prompt = make_df(prompts, sort_cols=['Script Name', 'Prompt Name'])
 fc = filter_df(df_call)
 fv = filter_df(df_vars)
 fs = filter_df(df_skill)
 fp = filter_df(df_prompt)
 
 # Excel export
-excel_buffer = io.BytesIO()
-with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+e_buf = io.BytesIO()
+with pd.ExcelWriter(e_buf, engine='openpyxl') as writer:
     df_call.to_excel(excel_writer=writer, sheet_name='Call Variables', index=False)
     df_vars.to_excel(excel_writer=writer, sheet_name='Variables', index=False)
     df_skill.to_excel(excel_writer=writer, sheet_name='Skills', index=False)
     df_prompt.to_excel(excel_writer=writer, sheet_name='Prompts', index=False)
     if failed:
         pd.DataFrame(failed).to_excel(excel_writer=writer, sheet_name='Failures', index=False)
-
 st.sidebar.download_button(
     'Download Excel Report',
-    data=excel_buffer.getvalue(),
+    data=e_buf.getvalue(),
     file_name='ivr_report_v10.2.xlsx',
     mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 )
 
 # Summary Metrics
 st.subheader('🔍 Summary Metrics')
-c1,c2,c3,c4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric('Scripts Processed', processed)
 c2.metric('Failures', len(failed))
 c3.metric('Unique Call Variables', fc['Variable Name'].nunique() if not fc.empty else 0)
 c4.metric('Unique Variables', fv['Variable Name'].nunique() if not fv.empty else 0)
 
 # Detail Sections
-
 def show_section(title: str, df: pd.DataFrame, filename: str):
     st.markdown(f'**{title}**')
     if not df.empty:
@@ -271,14 +253,13 @@ show_section('📂 Call Variables', fc, 'call_variables.csv')
 show_section('📂 Variables', fv, 'variables.csv')
 show_section('🎯 Skills', fs, 'skills.csv')
 show_section('🔊 Prompts', fp, 'prompts.csv')
-
 if failed:
     st.subheader(f'⚠️ Failures: {len(failed)}')
     df_fail = filter_df(pd.DataFrame(failed))
     st.dataframe(df_fail, use_container_width=True, height=200)
     st.download_button('Download failures.csv', df_fail.to_csv(index=False), 'ivr_failures.csv')
 
-# Call Flow Diagram with PDF export
+# Call Flow Diagram only (no PDF export)
 st.subheader('🎨 Call Flow Diagram')
 selected = st.selectbox('Select Script', script_names)
 blk = scripts[script_names.index(selected)]
@@ -305,48 +286,6 @@ with st.container():
             else:
                 dot.edge(src, dst)
     st.graphviz_chart(dot)
-    pdf_data = dot.pipe(format='pdf')
-    st.download_button('Download Diagram PDF', data=pdf_data, file_name=f'{selected}.pdf', mime='application/pdf')
-
-# Lazy batch ZIP export for all diagrams
-if st.button('Generate All Diagrams ZIP'):
-    with st.spinner('Building ZIP of all diagrams…'):
-        progress = st.progress(0)
-        total = len(script_names)
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, 'w') as zf:
-            for idx, (name, blk) in enumerate(zip(script_names, scripts), start=1):
-                xml_txt = ET.fromstring(blk).findtext('XMLDefinition', default='')
-                try:
-                    tree = ET.fromstring(clean_xml_definition(xml_txt))
-                except ET.ParseError:
-                    continue
-                edges2, labels2 = build_flow_graph(tree)
-                dot2 = graphviz.Digraph(
-                    format='pdf',
-                    graph_attr={'rankdir':'LR'},
-                    node_attr={'shape':'box','style':'rounded,filled','fillcolor':'#eef4fd'},
-                    edge_attr={'arrowsize':'0.7'}
-                )
-                for nid, lbl in labels2.items():
-                    dot2.node(nid, lbl)
-                for s, succs in edges2.items():
-                    for d, k in succs:
-                        if k:
-                            dot2.edge(s, d, xlabel=k)
-                        else:
-                            dot2.edge(s, d)
-                pdf_all = dot2.pipe(format='pdf')
-                zf.writestr(f"{name}.pdf", pdf_all)
-                progress.progress(idx/total)
-        zip_buffer.seek(0)
-        # Show download button after generation
-        st.download_button(
-            'Download All Diagrams (ZIP)',
-            data=zip_buffer.getvalue(),
-            file_name='all_diagrams.zip',
-            mime='application/zip'
-        )
 
 # Debug Tools
 with st.expander('🐞 Debug Tools'):
