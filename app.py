@@ -1,169 +1,220 @@
 import streamlit as st
 import xml.etree.ElementTree as ET
 import html
-import pandas as pd
 import re
+import pandas as pd
+from typing import List, Dict, Tuple
 
-# Set Streamlit page configuration
-st.set_page_config(page_title="Five9 IVR Audit Tool", layout="wide")
+# ------------------ Helper Functions ------------------
 
-# Display a simple disclaimer
+def parse_ivrscripts_blocks(xml_text: str) -> List[str]:
+    """
+    Parse the full XML text and return serialized strings of each <IVRScripts> block.
+    Handles both files where <IVRScripts> is the root and those wrapped in a parent element.
+    """
+    # Remove any XML declaration
+    xml_text = re.sub(r'^\s*<\?xml[^>]+\?>', '', xml_text)
+    # Wrap in dummy root to catch standalone or wrapped IVRScripts
+    wrapped = f"<root>{xml_text}</root>"
+    root = ET.fromstring(wrapped)
+    return [ET.tostring(node, encoding='unicode') for node in root.findall('.//IVRScripts')]
+
+
+def clean_xml_definition(raw_def: str) -> str:
+    """
+    Unescape HTML entities, fix stray ampersands, remove null bytes.
+    """
+    xml = html.unescape(raw_def)
+    xml = re.sub(r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;', xml)
+    return xml.replace("\x00", "")
+
+
+def extract_variables(ivr_root: ET.Element) -> Tuple[List[Dict], List[Dict]]:
+    """
+    Extract call variables (with dot notation) and simple variables.
+    """
+    call_vars, vars_ = [], []
+    modules = ivr_root.find('modules')
+    if modules is not None:
+        for mod in modules:
+            tag = mod.tag
+            mod_name = mod.findtext('moduleName', default='').strip()
+            for ve in mod.findall('.//variableName'):
+                text = ve.text.strip() if ve.text else ''
+                if not text:
+                    continue
+                row = {
+                    'Variable Name': text,
+                    'Module Name': mod_name,
+                    'Source Module': tag
+                }
+                if '.' in text:
+                    group, _ = text.split('.', 1)
+                    row.update({'Type': 'Call Variable', 'Group': group})
+                    call_vars.append(row)
+                else:
+                    row.update({'Type': 'Variable', 'Group': ''})
+                    vars_.append(row)
+    return call_vars, vars_
+
+
+def extract_skills(ivr_root: ET.Element) -> List[Dict]:
+    """
+    Extract skillTransfer names.
+    """
+    skills = []
+    modules = ivr_root.find('modules')
+    if modules is not None:
+        for mod in modules:
+            if mod.tag == 'skillTransfer':
+                mod_name = mod.findtext('moduleName', default='').strip()
+                for skl in mod.findall('.//listOfSkillsEx/extrnalObj/name'):
+                    name = skl.text.strip() if skl.text else ''
+                    if name:
+                        skills.append({'Skill Name': name, 'Module Name': mod_name})
+    return skills
+
+
+def extract_prompts(ivr_root: ET.Element) -> List[Dict]:
+    """
+    Extract prompt names.
+    """
+    prompts = []
+    modules = ivr_root.find('modules')
+    if modules is not None:
+        for mod in modules:
+            mod_name = mod.findtext('moduleName', default='').strip()
+            for prm in mod.findall('.//prompt'):
+                name_tag = prm.find('name')
+                text = name_tag.text.strip() if name_tag is not None and name_tag.text else ''
+                if text:
+                    prompts.append({'Prompt Name': text, 'Module Name': mod_name})
+    return prompts
+
+
+def make_df(rows: List[Dict], sort_cols: List[str] = None) -> pd.DataFrame:
+    """
+    Build DataFrame, drop duplicates, optionally sort.
+    """
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows).drop_duplicates()
+    if sort_cols:
+        df = df.sort_values(by=sort_cols)
+    return df
+
+# ------------------ Streamlit UI ------------------
+
+st.set_page_config(page_title='Five9 IVR Audit Tool', layout='wide')
+
+# Disclaimer
 st.info("""
 **Disclaimer & Terms of Use**
 
-This web tool is provided *as-is*, without warranty or official support from Five9.  
-- All file processing is local and no data is stored or transmitted externally.  
-- Intended for educational and illustrative use only.  
-- Use at your own risk. For production implementations, please consult Five9 TAMs or Professional Services.
+This tool is provided *as-is*, without warranty.  
+All processing is local; no data is stored externally.  
+Use at your own risk.
 """)
 
-# Title and description
-st.title("📞 Five9 IVR Audit Tool")
-st.markdown("Upload a Five9 IVR XML file to extract **Call Variables**, **Variables**, **Skills**, and **Prompt Names** from all scripts.")
+st.title('📞 Five9 IVR Audit Tool')
+st.markdown('Upload a Five9 IVR XML file to extract **Call Variables**, **Variables**, **Skills**, and **Prompts**.')
 
-# Upload XML file
-uploaded_file = st.file_uploader("Upload your Five9 IVR XML file", type="xml")
-
+uploaded_file = st.file_uploader('Upload IVR XML file', type='xml')
 if uploaded_file:
-    # Read and decode file content
-    raw = uploaded_file.read().decode("utf-8")
+    raw = uploaded_file.read().decode('utf-8')
+    try:
+        blocks = parse_ivrscripts_blocks(raw)
+    except ET.ParseError as e:
+        st.error(f'Error parsing XML: {e}')
+        blocks = []
 
-    # Extract individual <IVRScripts> blocks
-    matches = re.findall(r"<IVRScripts>.*?</IVRScripts>", raw, re.DOTALL)
+    call_vars, vars_, skills, prompts, failed = [], [], [], [], []
+    debug_data = {}
+    processed = 0
 
-    # Containers for extracted data
-    call_var_rows = []
-    var_rows = []
-    skill_rows = []
-    prompt_rows = []
-    failed_scripts = []
-    parsed_count = 0
+    for idx, blk in enumerate(blocks, start=1):
+        with st.spinner(f'Processing script {idx}/{len(blocks)}…'):
+            try:
+                root = ET.fromstring(blk)
+            except ET.ParseError as e:
+                failed.append({'Script Name': 'Unknown', 'Error': str(e)})
+                continue
 
-    for block in matches:
-        try:
-            # Parse each <IVRScripts> block
-            script = ET.fromstring(block)
-        except ET.ParseError as e:
-            # Log any parse errors
-            failed_scripts.append({"Script Name": "Unknown (outer parse failed)", "Error": str(e)})
-            continue
+            name = root.findtext('Name', default='').strip() or f'Script {idx}'
+            xml_def = root.findtext('XMLDefinition', default='')
+            if not xml_def:
+                failed.append({'Script Name': name, 'Error': 'Missing XMLDefinition'})
+                continue
 
-        # Get script name and embedded XMLDefinition
-        name = script.findtext("Name", default="").strip()
-        xml_def = script.findtext("XMLDefinition", default="")
-        if not xml_def:
-            continue
+            cleaned = clean_xml_definition(xml_def)
+            try:
+                ivr = ET.fromstring(cleaned)
+                processed += 1
+            except ET.ParseError as e:
+                failed.append({'Script Name': name, 'Error': str(e)})
+                continue
 
-        try:
-            # Decode & sanitize embedded IVR XML
-            decoded = html.unescape(xml_def)
-            decoded = re.sub(r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;', decoded)
-            decoded = decoded.replace("\x00", "")  # Remove null bytes
-            ivr_root = ET.fromstring(decoded)
-            parsed_count += 1
-        except ET.ParseError as e:
-            # Handle decoding errors
-            failed_scripts.append({"Script Name": name or "Unknown", "Error": str(e)})
-            continue
+            cvs, vs = extract_variables(ivr)
+            ss = extract_skills(ivr)
+            ps = extract_prompts(ivr)
+            for row in cvs + vs + ss + ps:
+                row['Script Name'] = name
 
-        # Look for <modules> in the IVR structure
-        modules = ivr_root.find("modules")
-        if modules is not None:
-            for mod in modules:
-                tag = mod.tag  # e.g. getDigits, input, skillTransfer, etc.
-                mod_name = mod.findtext("moduleName", default="")  # Friendly module label
+            call_vars.extend(cvs)
+            vars_.extend(vs)
+            skills.extend(ss)
+            prompts.extend(ps)
+            debug_data[name] = {
+                'Call Variables': cvs,
+                'Variables': vs,
+                'Skills': ss,
+                'Prompts': ps
+            }
 
-                # --- VARIABLE EXTRACTION ---
+    # Display sections
+    def show_section(title: str, rows: List[Dict], filename: str, sort_cols: List[str]):
+        st.subheader(title)
+        df = make_df(rows, sort_cols)
+        if not df.empty:
+            st.dataframe(df, use_container_width=True, height=300)
+            st.download_button(f'Download {filename}', df.to_csv(index=False), filename)
+        else:
+            st.info(f'No {title.lower()} found.')
 
-                # Search for all <variableName> tags within the module
-                for var_elem in mod.findall(".//variableName"):
-                    var_name = var_elem.text
-                    if not var_name:
-                        continue
+    show_section('📂 Call Variables', call_vars, 'call_variables.csv', ['Script Name', 'Variable Name'])
+    show_section('📂 Variables', vars_, 'variables.csv', ['Script Name', 'Variable Name'])
+    show_section('🎯 Skills', skills, 'skills.csv', ['Script Name', 'Skill Name'])
+    show_section('🔊 Prompts', prompts, 'prompts.csv', ['Script Name', 'Prompt Name'])
 
-                    # Structure the result
-                    row = {
-                        "Script Name": name,
-                        "Module Name": mod_name,
-                        "Variable Name": var_name,
-                        "Source Module": tag
-                    }
+    # Failures
+    if failed:
+        st.subheader(f'⚠️ {len(failed)} script(s) failed to process')
+        df_fail = pd.DataFrame(failed)
+        st.dataframe(df_fail, use_container_width=True, height=200)
+        st.download_button('Download failures CSV', df_fail.to_csv(index=False), 'ivr_failures.csv')
 
-                    # Identify as call variable if it uses dot notation
-                    if "." in var_name:
-                        group, var = var_name.split(".", 1)
-                        row["Type"] = "Call Variable"
-                        row["Group"] = group
-                        call_var_rows.append(row)
-                    else:
-                        row["Type"] = "Variable"
-                        row["Group"] = ""
-                        var_rows.append(row)
+    st.success(f'✅ Processed {processed} script(s); {len(failed)} failed.')
 
-                # --- SKILL EXTRACTION ---
+    # Debug tools in expander
+    with st.expander('🐞 Debug Tools'):
+        if debug_data:
+            script_names = list(debug_data.keys())
+            sel = st.selectbox('Select a script to inspect', script_names)
+            for section, rows in debug_data[sel].items():
+                st.markdown(f"**{section}**")
+                df = make_df(rows)
+                if not df.empty:
+                    st.dataframe(df, use_container_width=True, height=200)
+                else:
+                    st.info(f"No {section.lower()} for this script.")
+        else:
+            st.info('No data to debug.')
 
-                if tag == "skillTransfer":
-                    # Look inside nested structure for external skill names
-                    skill_names = mod.findall(".//listOfSkillsEx/extrnalObj/name")
-                    for skill in skill_names:
-                        if skill.text:
-                            skill_rows.append({
-                                "Script Name": name,
-                                "Skill Name": skill.text.strip(),
-                                "Module Name": mod_name
-                            })
-
-                # --- PROMPT EXTRACTION ---
-
-                for prompt in mod.findall(".//prompt"):
-                    name_tag = prompt.find("name")
-                    if name_tag is not None and name_tag.text:
-                        prompt_rows.append({
-                            "Script Name": name,
-                            "Prompt Name": name_tag.text.strip(),
-                            "Module Name": mod_name
-                        })
-
-    # ---------- UI OUTPUT: RESULTS DISPLAY ----------
-
-    st.subheader("📂 Call Variables")
-    if call_var_rows:
-        df_call = pd.DataFrame(call_var_rows).drop_duplicates().sort_values(by=["Script Name", "Variable Name"])
-        st.dataframe(df_call, use_container_width=True)
-        st.download_button("Download Call Variables CSV", df_call.to_csv(index=False), "call_variables.csv")
-    else:
-        st.info("No Call Variables found.")
-
-    st.subheader("📂 Variables")
-    if var_rows:
-        df_var = pd.DataFrame(var_rows).drop_duplicates().sort_values(by=["Script Name", "Variable Name"])
-        st.dataframe(df_var, use_container_width=True)
-        st.download_button("Download Variables CSV", df_var.to_csv(index=False), "variables.csv")
-    else:
-        st.info("No Variables found.")
-
-    st.subheader("🎯 Skills")
-    if skill_rows:
-        df_skill = pd.DataFrame(skill_rows).drop_duplicates().sort_values(by=["Script Name", "Skill Name"])
-        st.dataframe(df_skill, use_container_width=True)
-        st.download_button("Download Skills CSV", df_skill.to_csv(index=False), "skills.csv")
-    else:
-        st.info("No Skills found.")
-
-    st.subheader("🔊 Prompts")
-    if prompt_rows:
-        df_prompt = pd.DataFrame(prompt_rows).drop_duplicates().sort_values(by=["Script Name", "Prompt Name"])
-        st.dataframe(df_prompt, use_container_width=True)
-        st.download_button("Download Prompts CSV", df_prompt.to_csv(index=False), "prompts.csv")
-    else:
-        st.info("No Prompts found.")
-
-    # ---------- UI OUTPUT: ERRORS ----------
-    if failed_scripts:
-        st.subheader(f"⚠️ {len(failed_scripts)} IVR script(s) failed to process")
-        fail_df = pd.DataFrame(failed_scripts)
-        st.dataframe(fail_df, use_container_width=True)
-        st.download_button("Download Failures CSV", fail_df.to_csv(index=False), "ivr_failures.csv")
-
-    # Final summary
-    st.success(f"✅ Processed {parsed_count} IVRs. {len(failed_scripts)} failed.")
+# Footer
+st.markdown('---')
+st.markdown(
+    "<div style='text-align:center; color:gray; font-size:0.8em;'>"
+    "Version 8.0 &#9679; <a href='mailto:harry.spencerletts@five9.com'>Feedback</a>"
+    "</div>",
+    unsafe_allow_html=True
+)
