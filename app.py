@@ -1,32 +1,55 @@
 import streamlit as st
-import xml.etree.ElementTree as ET
 import html
 import re
 import pandas as pd
 import io
 import zipfile
-import graphviz  # Requires Graphviz system install
+import graphviz
 from typing import List, Dict, Tuple, Optional
 import os
 import tempfile
 import gc
-
+from lxml import etree as ET  # Switched from xml.etree to lxml
+from xml.sax.saxutils import escape
 
 # Helper: split raw XML into individual <IVRScripts> blocks
 def parse_ivrscripts_blocks(xml_text: str) -> List[str]:
-    xml_text = xml_text.lstrip('\ufeff')  # strip BOM
+    xml_text = xml_text.lstrip('﻿')  # strip BOM
     xml_text = re.sub(r'^\s*<\?xml[^>]+\?>', '', xml_text)
     wrapped = f"<root>{xml_text}</root>"
-    root = ET.fromstring(wrapped)
+    root = ET.fromstring(wrapped.encode("utf-8"))
     blocks = [ET.tostring(node, encoding='unicode') for node in root.findall('.//IVRScripts')]
     return blocks
 
-# Helper: clean embedded IVR XMLDefinition for valid parsing
+# Sanitize inner XMLDefinition
 def clean_xml_definition(raw_def: str) -> str:
-    xml = html.unescape(raw_def)
-    xml = re.sub(r'&(?!amp;|lt;|gt;|quot;|apos;)', '&amp;', xml)
-    xml = xml.replace("\x00", "")
-    xml = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F]', '', xml)
+    """
+    Sanitize an embedded XMLDefinition string so lxml.etree can parse it
+    without choking on stray '<', '>', '&', '"', or "'" inside text nodes.
+    """
+    # 1) Strip XML prolog if present
+    xml = re.sub(r'^<\?xml[^>]+\?>', '', raw_def)
+
+    # 2) Unescape any HTML entities (&amp;, &lt;, &quot;, etc.)
+    xml = html.unescape(xml)
+
+    # 3) Remove illegal XML control characters
+    xml = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]', '', xml)
+
+    # 4) Escape ALL text inside <value>…</value>
+    def _escape_value_text(match):
+        inner = match.group(1)
+        # escape &, <, > and also ' and "
+        return f"<value>{escape(inner, {'"':'&quot;', "'":'&apos;'})}</value>"
+
+    xml = re.sub(
+        r'<value>(.*?)</value>',
+        _escape_value_text,
+        xml,
+        flags=re.DOTALL
+    )
+
+    # 5) Return cleaned XML string
     return xml
 
 # Extract Call vs Simple Variables
@@ -39,7 +62,7 @@ def extract_variables(ivr_root: ET.Element, script_name: str) -> Tuple[List[Dict
         tag = mod.tag
         name = mod.findtext('moduleName', default='').strip()
         for ve in mod.findall('.//variableName'):
-            text = ve.text.strip() if ve.text else ''
+            text = ''.join(ve.itertext()).strip()
             if not text:
                 continue
             row = {'Script Name': script_name, 'Variable Name': text,
@@ -63,7 +86,7 @@ def extract_skills(ivr_root: ET.Element, script_name: str) -> List[Dict]:
         if mod.tag == 'skillTransfer':
             name = mod.findtext('moduleName', default='').strip()
             for skl in mod.findall('.//listOfSkillsEx/extrnalObj/name'):
-                text = skl.text.strip() if skl.text else ''
+                text = ''.join(skl.itertext()).strip()
                 if text:
                     skills.append({'Script Name': script_name,
                                    'Skill Name': text,
@@ -80,7 +103,7 @@ def extract_prompts(ivr_root: ET.Element, script_name: str) -> List[Dict]:
         name = mod.findtext('moduleName', default='').strip()
         for prm in mod.findall('.//prompt'):
             tag = prm.find('name')
-            text = tag.text.strip() if tag is not None and tag.text else ''
+            text = ''.join(tag.itertext()).strip() if tag is not None else ''
             if text:
                 prompts.append({'Script Name': script_name,
                                 'Prompt Name': text,
@@ -133,23 +156,20 @@ def process_script(blk: str, idx: int) -> Tuple[str, Dict, bool]:
         outer = ET.fromstring(blk)
     except Exception as e:
         return f'Script {idx}', {'error': str(e)}, False
-    
     name = outer.findtext('Name', default='').strip() or f'Script {idx}'
     xml_def = outer.findtext('XMLDefinition', default='')
-    
     if not xml_def:
         return name, {'error': 'Missing XMLDefinition'}, False
-    
     cleaned = clean_xml_definition(xml_def)
+    # Use recover parser to handle minor mismatches
+    inner_parser = ET.XMLParser(recover=True)
     try:
-        ivr = ET.fromstring(cleaned)
+        ivr = ET.fromstring(cleaned.encode('utf-8'), parser=inner_parser)
     except ET.ParseError as e:
         return name, {'error': f'Inner XML parse: {e}'}, False
-    
     cvs, vs = extract_variables(ivr, name)
     ss = extract_skills(ivr, name)
     ps = extract_prompts(ivr, name)
-    
     data = {
         'Call Variables': cvs,
         'Variables': vs,
@@ -157,7 +177,6 @@ def process_script(blk: str, idx: int) -> Tuple[str, Dict, bool]:
         'Prompts': ps,
         'XMLDefinition': cleaned  # Store for diagram rendering
     }
-    
     return name, data, True
 
 # Main function to batch process all scripts
@@ -166,47 +185,41 @@ def process_all_scripts(scripts: List[str]) -> Tuple[List[str], List[Dict], List
     call_vars, vars_, skills, prompts, failed = [], [], [], [], []
     script_names = []
     script_data = {}
-    
     for idx, blk in enumerate(scripts, start=1):
         name, data, success = process_script(blk, idx)
         script_names.append(name)
-        
         if not success:
             failed.append({'Script Name': name, 'Error': data.get('error', 'Unknown error')})
             continue
-        
         script_data[name] = data
         call_vars.extend(data['Call Variables'])
         vars_.extend(data['Variables'])
         skills.extend(data['Skills'])
         prompts.extend(data['Prompts'])
-    
     return script_names, script_data, call_vars, vars_, skills, prompts, failed
 
 # Generate a single diagram SVG
 @st.cache_data
 def generate_diagram(xml_def: str) -> graphviz.Digraph:
     try:
-        ivr_tree = ET.fromstring(xml_def)
+        # parse with recover in case of minor tag mismatches
+        parser = ET.XMLParser(recover=True)
+        ivr_tree = ET.fromstring(xml_def.encode('utf-8'), parser=parser)
         edges, labels = build_flow_graph(ivr_tree)
-        
         dot = graphviz.Digraph(
             format='svg',
             graph_attr={'rankdir':'LR'},
             node_attr={'shape':'box','style':'rounded,filled','fillcolor':'#eef4fd'},
             edge_attr={'arrowsize':'0.7'}
         )
-        
         for nid, lbl in labels.items():
             dot.node(nid, lbl)
-            
         for src, succs in edges.items():
             for dst, key in succs:
                 if key:
                     dot.edge(src, dst, xlabel=key)
                 else:
                     dot.edge(src, dst)
-                    
         return dot
     except Exception as e:
         st.error(f"Diagram generation error: {e}")
